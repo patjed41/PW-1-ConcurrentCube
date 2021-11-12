@@ -103,11 +103,11 @@ Implementacja kostki podlega walidacji, wstępnie sprawdzającej zgodność ze s
 
 Na komputerze students, w katalogu walidacji, są:
 
-pliki .tar.gz z rozwiązaniami,
+- pliki .tar.gz z rozwiązaniami,
 
-plik validate.sh ,
+- plik validate.sh ,
 
-plik Validate.java .
+- plik Validate.java .
 
 Polecenie:
 
