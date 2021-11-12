@@ -108,7 +108,8 @@ plik validate.sh ,
 
 plik Validate.java .
 
-## Polecenie:
+Polecenie:
 
 sh validate.sh ab123456
+
 waliduje rozwiązanie studenta o identyfikatorze ab123456. Komunikat OK informuje o sukcesie.
