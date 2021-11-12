@@ -27,6 +27,7 @@ W rozwiązaniu zadania jest pakiet concurrentcube z implementacją kostki za pom
     package concurrentcube;
 
     import java.util.function.BiConsumer;
+    ...
 
     public class Cube {
 
