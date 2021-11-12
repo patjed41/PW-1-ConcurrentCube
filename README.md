@@ -24,31 +24,31 @@ Rozwiązanie ma być zgodne z poniższą specyfikacją.
 
 W rozwiązaniu zadania jest pakiet concurrentcube z implementacją kostki za pomocą klasy:
 
-package concurrentcube;
+    package concurrentcube;
 
-import java.util.function.BiConsumer;
+    import java.util.function.BiConsumer;
 
-public class Cube {
+    public class Cube {
 
-    public Cube(int size,
-            BiConsumer<Integer, Integer> beforeRotation,
-            BiConsumer<Integer, Integer> afterRotation,
-            Runnable beforeShowing,
-            Runnable afterShowing) {
+        public Cube(int size,
+                BiConsumer<Integer, Integer> beforeRotation,
+                BiConsumer<Integer, Integer> afterRotation,
+                Runnable beforeShowing,
+                Runnable afterShowing) {
+            ...
+        }
+
+        public void rotate(int side, int layer) throws InterruptedException {
+            ...
+        }
+
+        public String show() throws InterruptedException {
+            ...
+        }
+
         ...
+
     }
-
-    public void rotate(int side, int layer) throws InterruptedException {
-        ...
-    }
-
-    public String show() throws InterruptedException {
-        ...
-    }
-
-    ...
-
-}
 
 - Konstruktor Cube(size, beforeRotation, afterRotation, beforeShowing, afterShowing) tworzy ułożoną kostkę rozmiaru size. Parametr size oznacza długość boku kostki mierzoną liczbą kwadratów.
 Argumenty typu BiConsumer<Integer, Integer> i Runnable to akcje wywoływane podczas operacji na kostce. Zakładamy, że nie korzystają one z metod klasy Cube.
