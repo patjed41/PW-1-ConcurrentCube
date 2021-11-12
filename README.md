@@ -59,7 +59,6 @@ Akcja beforeRotation może np. uruchomić ramię robota manipulującego fizyczn�
 Argument side przyjmuje jedną z wartości: 0 (góra), 1 (lewo), 2 (przód), 3 (prawo), 4 (tył), 5 (dół).
 Argument layer, dla kostki o rozmiarze size, przyjmuje wartość od 0 do size - 1.
 Wszystkie zlecone obroty są wykonywane, nawet, jeśli anulują nawzajem swój wynik.
-
 Bezpośrednio przed obrotem warstwy, gdy wątek doczeka się na możliwość wykonania tej operacji, metoda wywołuje akcję beforeRotation a bezpośrednio po obrocie wywołuje akcję afterRotation. Obu akcjom przekazuje jako argumenty wartości side i layer.
 
 - Metoda show() pokazuje stan kostki w postaci napisu złożonego z cyfr od '0' do '5'.
