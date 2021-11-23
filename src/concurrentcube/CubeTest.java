@@ -1,12 +1,17 @@
 package concurrentcube;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import org.junit.jupiter.api.*;
 
+import javax.naming.InitialContext;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class CubeTest {
 
@@ -55,7 +60,7 @@ public class CubeTest {
             assertEquals(unchangedCube, cube.show());
         }
         catch (InterruptedException e) {
-            System.out.println("test interrupted");
+            System.err.println("test interrupted");
         }
 
         assertEquals(1, 1);
@@ -102,7 +107,7 @@ public class CubeTest {
             }
         }
         catch (InterruptedException e) {
-            System.out.println("test interrupted");
+            System.err.println("test interrupted");
         }
     }
 
@@ -145,8 +150,8 @@ public class CubeTest {
         List<Pair<Integer, Integer>> pairs = Collections.synchronizedList(new ArrayList<>());
 
         Cube concurrentCube = new Cube(size,
-                (x, y) -> { ; },
                 (x, y) -> { pairs.add(new Pair<>(x, y)); },
+                (x, y) -> { ; },
                 () -> { ; },
                 () -> { ; }
         );
@@ -162,7 +167,7 @@ public class CubeTest {
                             }
                         }
                         catch (InterruptedException e) {
-                            System.out.println("test interrupted");
+                            System.err.println("test interrupted");
                         }
                     }
             );
@@ -188,15 +193,223 @@ public class CubeTest {
             }
         }
         catch (InterruptedException e) {
-            System.out.println("test interrupted");
+            System.err.println("test interrupted");
         }
 
         try {
             assertEquals(sequentialCube.show(), concurrentCube.show());
         }
         catch (InterruptedException e) {
-            System.out.println("test interrupted");
+            System.err.println("test interrupted");
         }
     }
 
+    @Test // test of security
+    public void securityTest() {
+        int size = 10;
+
+        AtomicInteger[][][] block = new AtomicInteger[size][size][size];
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < size; j++) {
+                for (int k = 0; k < size; k++) {
+                    block[i][j][k] = new AtomicInteger();
+                }
+            }
+        }
+
+        AtomicInteger showCounter = new AtomicInteger();
+
+        Cube cube = new Cube(size,
+                (side, layer) -> {
+                    assertEquals(0, showCounter.get());
+
+                    for (int i = 0; i < size; i++) {
+                        for (int j = 0; j < size; j++) {
+                            if (side == 0) assertEquals(1, block[layer][i][j].incrementAndGet());
+                            else if (side == 1) assertEquals(1, block[i][layer][j].incrementAndGet());
+                            else if (side == 2) assertEquals(1, block[i][j][layer].incrementAndGet());
+                            else if (side == 3) assertEquals(1, block[i][size - layer - 1][j].incrementAndGet());
+                            else if (side == 4) assertEquals(1, block[i][j][size - layer - 1].incrementAndGet());
+                            else if (side == 5) assertEquals(1, block[size - layer - 1][i][j].incrementAndGet());
+                        }
+                    }
+                },
+                (side, layer) -> {
+                    for (int i = 0; i < size; i++) {
+                        for (int j = 0; j < size; j++) {
+                            if (side == 0) block[layer][i][j].decrementAndGet();
+                            else if (side == 1) block[i][layer][j].decrementAndGet();
+                            else if (side == 2) block[i][j][layer].decrementAndGet();
+                            else if (side == 3) block[i][size - layer - 1][j].decrementAndGet();
+                            else if (side == 4) block[i][j][size - layer - 1].decrementAndGet();
+                            else if (side == 5) block[size - layer - 1][i][j].decrementAndGet();
+                        }
+                    }
+                },
+                () -> {
+                    showCounter.incrementAndGet();
+
+                    for (int i = 0; i < size; i++) {
+                        for (int j = 0; j < size; j++) {
+                            for (int k = 0; k < size; k++) {
+                                assertEquals(0, block[i][j][j].get());
+                            }
+                        }
+                    }
+                },
+                showCounter::decrementAndGet
+        );
+
+        int rotations = 10000;
+        int threadsNum = 20;
+        Random random = new Random();
+
+        Thread[] threads = new Thread[threadsNum];
+        for (int i = 0; i < threadsNum; i++) {
+            threads[i] = new Thread(
+                    () -> {
+                        try {
+                            for (int j = 0; j < rotations; j++) {
+                                int r = random.nextInt(7);
+                                if (r == 6) {
+                                    cube.show();
+                                }
+                                else {
+                                    cube.rotate(r, random.nextInt(size));
+                                }
+                            }
+                        }
+                        catch (InterruptedException e) {
+                            System.err.println("test interrupted");
+                        }
+                    }
+            );
+        }
+
+        for (int i = 0; i < threadsNum; i++) {
+            threads[i].start();
+        }
+
+        try {
+            for (int i = 0; i < threadsNum; i++) {
+                threads[i].join();
+            }
+        }
+        catch (InterruptedException e) {
+            System.err.println("test interrupted");
+        }
+    }
+
+    @Test // finishing rotation after interruption
+    public void interruptionHandlingTest1() {
+        int size = 3;
+
+        Cube interruptedCube = new Cube(size,
+                (x, y) -> { Thread.currentThread().interrupt(); },
+                (x, y) -> { ; },
+                () -> { ; },
+                () -> { ; }
+        );
+
+        Cube uninterruptedCube = new Cube(size,
+                (x, y) -> { ; },
+                (x, y) -> { ; },
+                () -> { ; },
+                () -> { ; }
+        );
+
+        AtomicBoolean exceptionThrown = new AtomicBoolean(false);
+
+        Thread interruptedThread = new Thread(
+                () -> {
+                    try {
+                        interruptedCube.rotate(0, 0);
+                    }
+                    catch (InterruptedException e) {
+                        exceptionThrown.set(true);
+                    }
+                }
+        );
+
+        interruptedThread.start();
+
+        try {
+            uninterruptedCube.rotate(0, 0);
+            interruptedThread.join();
+            assertTrue(exceptionThrown.get());
+            assertEquals(uninterruptedCube.show(), interruptedCube.show());
+        }
+        catch (InterruptedException e) {
+            System.err.println("test interrupted");
+        }
+    }
+
+    @Test // interruption in random moment
+    public void interruptionHandlingTest2() {
+        int size = 1;
+        int trials = 50;
+        int threadsNum = 10;
+        Random random = new Random();
+
+        for (int trial = 0; trial < trials; trial++) {
+            AtomicInteger rotationCounter = new AtomicInteger();
+            Cube cube = new Cube(size,
+                    (x, y) -> { rotationCounter.incrementAndGet(); },
+                    (x, y) -> { ; },
+                    () -> { ; },
+                    () -> { ; }
+            );
+
+            Thread[] threads = new Thread[threadsNum];
+            for (int i = 0; i < threadsNum; i++) {
+                threads[i] = new Thread(
+                        () -> {
+                            boolean exceptionThrown = false;
+                            while (!exceptionThrown) {
+                                try {
+                                    cube.rotate(0, 0);
+                                }
+                                catch (InterruptedException e) {
+                                    exceptionThrown = true;
+                                }
+                            }
+                        }
+                );
+            }
+
+            for (int i = 0; i < threadsNum; i++) {
+                threads[i].start();
+            }
+
+            for (int i = 0; i < threadsNum; i++) {
+                try {
+                    Thread.sleep(random.nextInt(3));
+                }
+                catch (InterruptedException e) {
+                    System.err.println("test interrupted");
+                }
+                while (threads[i].isAlive()) {
+                    threads[i].interrupt();
+                }
+            }
+
+            for (int i = 0; i < threadsNum; i++) {
+                try {
+                    threads[i].join();
+                } catch (InterruptedException e) {
+                    System.err.println("test interrupted");
+                }
+            }
+
+            try {
+                if (rotationCounter.get() % 4 == 0) assertEquals("012345", cube.show());
+                if (rotationCounter.get() % 4 == 1) assertEquals("023415", cube.show());
+                if (rotationCounter.get() % 4 == 2) assertEquals("034125", cube.show());
+                if (rotationCounter.get() % 4 == 3) assertEquals("041235", cube.show());
+            }
+            catch (InterruptedException e) {
+                System.err.println("test interrupted");
+            }
+        }
+    }
 }

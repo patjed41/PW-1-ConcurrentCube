@@ -1,12 +1,9 @@
 package concurrentcube;
 
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 
 public class Side {
-    int[][] color; // The type is AtomicInteger so it can be easily passed by reference.
+    int[][] color;
     int size;
 
     public Side(int size, int initialColor) {
@@ -80,13 +77,13 @@ public class Side {
 
     @Override
     public String toString() {
-        String result = "";
+        StringBuilder result = new StringBuilder();
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
-                result += color[i][j];
+                result.append(color[i][j]);
             }
         }
-        return result;
+        return result.toString();
     }
 
 }

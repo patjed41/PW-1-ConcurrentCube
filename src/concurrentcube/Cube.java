@@ -14,10 +14,10 @@ public class Cube {
 
     private int workingNum;
     private int workingGroup;
-    private boolean[][] workingLayer;
+    private final boolean[][] workingLayer;
     private int waitingNum;
-    private int[] waitingFromGroup;
-    private int[][] waitingWithLayer;
+    private final int[] waitingFromGroup;
+    private final int[][] waitingWithLayer;
     private final Semaphore mutex;
     private final Semaphore showSem;
     private final Semaphore[][] layerSem;
@@ -161,52 +161,14 @@ public class Cube {
         else return 2;
     }
 
-    public void rotate(int side, int layer) throws InterruptedException {
-        int group = getGroupOfRotation(side);
-        int dualLayer = side > 2 ? layer : size - layer - 1;
-        mutex.acquire();
-        if (workingNum > 0 && (workingGroup != group || waitingNum > 0 || workingLayer[group][dualLayer])) {
-            waitingNum++;
-            waitingFromGroup[group]++;
-            waitingWithLayer[group][dualLayer]++;
-            mutex.release();
-            layerSem[group][dualLayer].acquire();
-            waitingNum--;
-            waitingFromGroup[group]--;
-            waitingWithLayer[group][dualLayer]--;
-        }
-        workingGroup = group;
-        workingLayer[group][dualLayer] = true;
-        workingNum++;
-        boolean releasedNext = false;
-        for (int otherLayer = dualLayer + 1; otherLayer < size; otherLayer++) {
-            if (waitingWithLayer[group][otherLayer] > 0) {
-                releasedNext = true;
-                layerSem[group][otherLayer].release();
-                break;
-            }
-        }
-        if (!releasedNext) {
-            mutex.release();
-        }
-
-        beforeRotation.accept(side, layer);
-
-        rotateLayer(side, layer);
-        rotateSide(side, layer);
-
-        afterRotation.accept(side, layer);
-
-        mutex.acquire();
-        workingNum--;
-        workingLayer[group][dualLayer] = false;
+    private void releaseNextGroup(int group) {
         if (workingNum == 0 && waitingNum > 0) {
-            for (int nextGroup = group + 1; true; nextGroup = (nextGroup + 1) % 4) {
+            for (int nextGroup = (group + 1) % GROUPS; true; nextGroup = (nextGroup + 1) % GROUPS) {
                 if (waitingFromGroup[nextGroup] > 0) {
-                    if (nextGroup == 3) {
+                    if (nextGroup == 3) { // show group
                         showSem.release();
                     }
-                    else {
+                    else { // one of rotation groups
                         for (int firstLayer = 0; firstLayer < size; firstLayer++) {
                             if (waitingWithLayer[nextGroup][firstLayer] > 0) {
                                 layerSem[nextGroup][firstLayer].release();
@@ -223,16 +185,77 @@ public class Cube {
         }
     }
 
+    public void rotate(int side, int layer) throws InterruptedException {
+        int group = getGroupOfRotation(side);
+        int dualLayer = side > 2 ? layer : size - layer - 1;
+        Thread thread = Thread.currentThread();
+
+        mutex.acquire(); // No variables were changed, so there is no problem if thread is interrupted.
+        if (workingNum > 0 && (workingGroup != group || waitingNum > 0 || workingLayer[group][dualLayer])) {
+            waitingNum++;
+            waitingFromGroup[group]++;
+            waitingWithLayer[group][dualLayer]++;
+            mutex.release();
+            layerSem[group][dualLayer].acquireUninterruptibly(); // Interruption may occur, it is handled 4 lines below.
+            waitingNum--;
+            waitingFromGroup[group]--;
+            waitingWithLayer[group][dualLayer]--;
+            if (thread.isInterrupted()) {
+                thread.interrupt();
+                releaseNextGroup((group + 3) % 4);
+                throw new InterruptedException();
+            }
+        }
+        // If thread is interrupted after pre-protocol, we finish rotation as if it was uninterrupted.
+        workingGroup = group;
+        workingLayer[group][dualLayer] = true;
+        workingNum++;
+        boolean releasedNext = false;
+        for (int otherLayer = dualLayer + 1; otherLayer < size; otherLayer++) {
+            if (waitingWithLayer[group][otherLayer] > 0) {
+                releasedNext = true;
+                layerSem[group][otherLayer].release();
+                break;
+            }
+        }
+        if (!releasedNext) {
+            mutex.release();
+        }
+
+        beforeRotation.accept(side, layer);
+        rotateLayer(side, layer);
+        rotateSide(side, layer);
+        afterRotation.accept(side, layer);
+
+        mutex.acquireUninterruptibly();
+        workingNum--;
+        workingLayer[group][dualLayer] = false;
+        releaseNextGroup(group);
+
+        if (thread.isInterrupted()) { // If thread was interrupted after pre-protocol.
+            thread.interrupt();
+            throw new InterruptedException();
+        }
+    }
+
     public String show() throws InterruptedException {
-        mutex.acquire();
+        Thread thread = Thread.currentThread();
+
+        mutex.acquire(); // No variables were changed, so there is no problem if thread is interrupted.
         if (workingNum > 0 && (workingGroup != 3 || waitingNum > 0)) {
             waitingNum++;
             waitingFromGroup[3]++;
             mutex.release();
-            showSem.acquire();
+            showSem.acquireUninterruptibly(); // Interruption may occur, it is handled 3 lines below.
             waitingNum--;
             waitingFromGroup[3]--;
+            if (thread.isInterrupted()) {
+                thread.interrupt();
+                releaseNextGroup(2);
+                throw new InterruptedException();
+            }
         }
+        // If thread is interrupted after pre-protocol, we finish building description as if it was uninterrupted.
         workingGroup = 3;
         workingNum++;
         if (waitingFromGroup[3] > 0) {
@@ -243,34 +266,17 @@ public class Cube {
         }
 
         beforeShowing.run();
-
         String description = top.toString() + left.toString() + front.toString() +
                              right.toString() + back.toString() + bottom.toString();
-
         afterShowing.run();
 
-        mutex.acquire();
+        mutex.acquireUninterruptibly();
         workingNum--;
-        if (workingNum == 0 && waitingNum > 0) {
-            for (int nextGroup = 0; true; nextGroup++) {
-                if (waitingFromGroup[nextGroup] > 0) {
-                    if (nextGroup == 3) {
-                        showSem.release();
-                    }
-                    else {
-                        for (int firstLayer = 0; firstLayer < size; firstLayer++) {
-                            if (waitingWithLayer[nextGroup][firstLayer] > 0) {
-                                layerSem[nextGroup][firstLayer].release();
-                                break;
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-        else {
-            mutex.release();
+        releaseNextGroup(3);
+
+        if (thread.isInterrupted()) { // If thread was interrupted after pre-protocol.
+            thread.interrupt();
+            throw new InterruptedException();
         }
 
         return description;
