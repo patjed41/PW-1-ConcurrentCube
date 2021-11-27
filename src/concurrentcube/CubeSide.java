@@ -2,11 +2,11 @@ package concurrentcube;
 
 import java.util.Arrays;
 
-public class Side {
+public class CubeSide {
     int[][] color;
     int size;
 
-    public Side(int size, int initialColor) {
+    public CubeSide(int size, int initialColor) {
         this.size = size;
         color = new int[size][size];
         for (int i = 0; i < size; i++) {

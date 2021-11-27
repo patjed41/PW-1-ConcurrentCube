@@ -1,3 +1,5 @@
+// Patryk jędrzejczak
+
 package concurrentcube;
 
 import java.util.concurrent.Semaphore;
@@ -10,19 +12,37 @@ public class Cube {
     private final BiConsumer<Integer, Integer> afterRotation;
     private final Runnable beforeShowing;
     private final Runnable afterShowing;
-    private final Side top, left, front, right, back, bottom;
+    private final CubeSide top, left, front, right, back, bottom;
 
-    private int workingNum;
-    private int workingGroup;
+    /**************************** ZMIENNE SYNCHRONIZACYJNE ********************************/
+
+    // liczba wątków, które aktualnie rotują kostkę lub pokazują jej stan
+    private volatile int workingNum;
+    // numer aktualnie pracującej grupy
+    private volatile int workingGroup;
+    // workingLayer[s][i] == true, gdy i-ta warstwa potrząc od ściany s < 3 jest rotowana
     private final boolean[][] workingLayer;
-    private int waitingNum;
+    // liczba wątków czekających na rotację lub pokazanie stanu
+    private volatile int waitingNum;
+    // waitingFromGroup[i] - liczba wątków czekających na rotację/pokazanie z i-tej grupy
     private final int[] waitingFromGroup;
-    private final int[][] waitingWithLayer;
+    // waitingFromLayer[s][i] - liczba wątków czekających na obrót i-tej warstwy patrząc od ściany s < 3
+    private final int[][] waitingFromLayer;
+    // ochrona zmiennych
     private final Semaphore mutex;
+    // semafor, na którym czekają wątki oczekujące na pokazenie stanu kostki
     private final Semaphore showSem;
+    // layerSem[s][i] - semafor, na którym czekają wątki oczekujące na obrót i-tej warstwy patrząc od ściany s < 3
     private final Semaphore[][] layerSem;
-
+    // Mamy cztery grupy wątków:
+    //  0 - rotujące warstwy względem ścian 0 i 5
+    //  1 - rotujące warstwy względem ścian 1 i 3
+    //  2 - rotujące warstwy względem ścian 2 i 4
+    //  3 - pokazujące stan kostki
+    // Bezpieczeństwo rozwiązania jest zachowane, gdy w danym momencie pracują wątki tylko z jednej grupy. Ponadto
+    // dla grup 0, 1, 2 aktualnie może pracować tylko 1 proces obracający jakąś warstwę.
     private static final int GROUPS = 4;
+    private static final int SHOW_GROUP = 3;
 
     public Cube(int size,
                 BiConsumer<Integer, Integer> beforeRotation,
@@ -35,19 +55,19 @@ public class Cube {
         this.beforeShowing = beforeShowing;
         this.afterShowing = afterShowing;
 
-        top = new Side(size, 0);
-        left = new Side(size, 1);
-        front = new Side(size, 2);
-        right = new Side(size, 3);
-        back = new Side(size, 4);
-        bottom = new Side(size, 5);
+        top = new CubeSide(size, 0);
+        left = new CubeSide(size, 1);
+        front = new CubeSide(size, 2);
+        right = new CubeSide(size, 3);
+        back = new CubeSide(size, 4);
+        bottom = new CubeSide(size, 5);
 
         workingNum = 0;
         workingGroup = 0;
         workingLayer = new boolean[GROUPS][size];
         waitingNum = 0;
         waitingFromGroup = new int[GROUPS];
-        waitingWithLayer = new int[GROUPS][size];
+        waitingFromLayer = new int[GROUPS][size];
         mutex = new Semaphore(1, true);
         showSem = new Semaphore(0, true);
         layerSem = new Semaphore[GROUPS - 1][size];
@@ -58,8 +78,9 @@ public class Cube {
         }
     }
 
-    private void rotateLayer(int side, int layer) throws InterruptedException {
-        int[] copyOfFirstFragment = null;
+    // Operacja obrócenia "brzegów" warstwy.
+    private void rotateLayer(int side, int layer) {
+        int[] copyOfFirstFragment;
 
         switch (side) {
             case 0:
@@ -107,51 +128,24 @@ public class Cube {
         }
     }
 
+    // Operacja obrócenia całej ściany, gdy layer == 0 lub layer == size - 1.
     private void rotateSide(int side, int layer) {
         if (layer == 0) {
-            switch (side) {
-                case 0:
-                    top.rotateClockwise();
-                    break;
-                case 1:
-                    left.rotateClockwise();
-                    break;
-                case 2:
-                    front.rotateClockwise();
-                    break;
-                case 3:
-                    right.rotateClockwise();
-                    break;
-                case 4:
-                    back.rotateClockwise();
-                    break;
-                case 5:
-                    bottom.rotateClockwise();
-                    break;
-            }
+            if (side == 0) top.rotateClockwise();
+            else if (side == 1) left.rotateClockwise();
+            else if (side == 2) front.rotateClockwise();
+            else if (side == 3) right.rotateClockwise();
+            else if (side == 4) back.rotateClockwise();
+            else if (side == 5) bottom.rotateClockwise();
         }
 
         if (layer == size - 1) {
-            switch (side) {
-                case 0:
-                    bottom.rotateCounterClockwise();
-                    break;
-                case 1:
-                    right.rotateCounterClockwise();
-                    break;
-                case 2:
-                    back.rotateCounterClockwise();
-                    break;
-                case 3:
-                    left.rotateCounterClockwise();
-                    break;
-                case 4:
-                    front.rotateCounterClockwise();
-                    break;
-                case 5:
-                    top.rotateCounterClockwise();
-                    break;
-            }
+            if (side == 0) bottom.rotateCounterClockwise();
+            else if (side == 1) right.rotateCounterClockwise();
+            else if (side == 2) back.rotateCounterClockwise();
+            else if (side == 3) left.rotateCounterClockwise();
+            else if (side == 4) front.rotateCounterClockwise();
+            else if (side == 5) top.rotateCounterClockwise();
         }
     }
 
@@ -161,16 +155,19 @@ public class Cube {
         else return 2;
     }
 
+    // Fragment kodu dopuszczający kolejną grupę wątków do pracy. Faktycznie wpuszczany jest jeden wątek, a reszta
+    // grupy jest wpuszczana później kaskadowo. Jest to wydzielony fragment kodu z funkcji rotate() i show(), bo się
+    // powtarza. Lepiej go teraz nie analizować.
     private void releaseNextGroup(int group) {
-        if (workingNum == 0 && waitingNum > 0) {
+        if (workingNum == 0 && waitingNum > 0) { // Mamy kogo wpuścić.
             for (int nextGroup = (group + 1) % GROUPS; true; nextGroup = (nextGroup + 1) % GROUPS) {
                 if (waitingFromGroup[nextGroup] > 0) {
-                    if (nextGroup == 3) { // show group
+                    if (nextGroup == SHOW_GROUP) { // Wpuszczamy grupę pokazująca stan kostki.
                         showSem.release();
                     }
-                    else { // one of rotation groups
+                    else { // Wpuszczamy grupę rotującą (być może tę samą).
                         for (int firstLayer = 0; firstLayer < size; firstLayer++) {
-                            if (waitingWithLayer[nextGroup][firstLayer] > 0) {
+                            if (waitingFromLayer[nextGroup][firstLayer] > 0) {
                                 layerSem[nextGroup][firstLayer].release();
                                 break;
                             }
@@ -180,45 +177,67 @@ public class Cube {
                 }
             }
         }
-        else {
+        else { // Nie mamy kogo wpuścić lub nie możemy tego zrobić, bo ktoś jeszcze pracuje.
             mutex.release();
         }
     }
 
     public void rotate(int side, int layer) throws InterruptedException {
         int group = getGroupOfRotation(side);
-        int dualLayer = side > 2 ? layer : size - layer - 1;
+        int dualLayer = side < 3 ? layer : size - layer - 1; // jednoznaczna warstwa dla przeciwnych ścian
         Thread thread = Thread.currentThread();
 
-        mutex.acquire(); // No variables were changed, so there is no problem if thread is interrupted.
+        mutex.acquire();
+        // Poniżej true, jeśli wątek musi poczekać.
         if (workingNum > 0 && (workingGroup != group || waitingNum > 0 || workingLayer[group][dualLayer])) {
             waitingNum++;
             waitingFromGroup[group]++;
-            waitingWithLayer[group][dualLayer]++;
+            waitingFromLayer[group][dualLayer]++;
+
             mutex.release();
-            layerSem[group][dualLayer].acquireUninterruptibly(); // Interruption may occur, it is handled 4 lines below.
+            /*layerSem[group][dualLayer].acquireUninterruptibly(); // Wątek może zostać przerwany. Później to obsłużymy.
+
             waitingNum--;
             waitingFromGroup[group]--;
-            waitingWithLayer[group][dualLayer]--;
+            waitingFromLayer[group][dualLayer]--;
+
             if (thread.isInterrupted()) {
                 thread.interrupt();
                 releaseNextGroup((group + 3) % 4);
                 throw new InterruptedException();
+            }*/
+            try {
+                layerSem[group][dualLayer].acquire();
             }
+            catch (InterruptedException e) {
+                waitingNum--;
+                waitingFromGroup[group]--;
+                waitingFromLayer[group][dualLayer]--;
+                releaseNextGroup((group + 3) % 4);
+                throw new InterruptedException();
+            }
+
+            waitingNum--;
+            waitingFromGroup[group]--;
+            waitingFromLayer[group][dualLayer]--;
         }
-        // If thread is interrupted after pre-protocol, we finish rotation as if it was uninterrupted.
+
+        // Wątek przeszedł protokół wstępny. Od tego momemntu, jeśli zostanie przerwany, wykonujemu funkcję do końca.
         workingGroup = group;
         workingLayer[group][dualLayer] = true;
         workingNum++;
+
+        // Kaskodowe wpuszczanie kolejnych wątków z pracującej grupy z dziedziczeniem mutex'a. Ostatecznie dla każdej
+        // jednoznacznej warstwy zostanie wpuszczony jeden wątek, o ile choć jeden czeka na wpuszczenie.
         boolean releasedNext = false;
         for (int otherLayer = dualLayer + 1; otherLayer < size; otherLayer++) {
-            if (waitingWithLayer[group][otherLayer] > 0) {
+            if (waitingFromLayer[group][otherLayer] > 0) {
                 releasedNext = true;
                 layerSem[group][otherLayer].release();
                 break;
             }
         }
-        if (!releasedNext) {
+        if (!releasedNext) { // Wątek jest ostatnim wpuszczonym z kaskadowej sekwencji wpuszczeń.
             mutex.release();
         }
 
@@ -230,9 +249,9 @@ public class Cube {
         mutex.acquireUninterruptibly();
         workingNum--;
         workingLayer[group][dualLayer] = false;
-        releaseNextGroup(group);
+        releaseNextGroup(group); // Wpuszczenie kolejnej grupy wątków. Z sukcesem zrobi to tylko ostatni kończący pracę.
 
-        if (thread.isInterrupted()) { // If thread was interrupted after pre-protocol.
+        if (thread.isInterrupted()) { // Wątek został przerwany po protokole wstępnym.
             thread.interrupt();
             throw new InterruptedException();
         }
@@ -241,24 +260,32 @@ public class Cube {
     public String show() throws InterruptedException {
         Thread thread = Thread.currentThread();
 
-        mutex.acquire(); // No variables were changed, so there is no problem if thread is interrupted.
+        mutex.acquire();
+
+        // Poniżej true, jeśli wątek musi poczekać.
         if (workingNum > 0 && (workingGroup != 3 || waitingNum > 0)) {
             waitingNum++;
-            waitingFromGroup[3]++;
+            waitingFromGroup[SHOW_GROUP]++;
+
             mutex.release();
-            showSem.acquireUninterruptibly(); // Interruption may occur, it is handled 3 lines below.
+            showSem.acquireUninterruptibly(); // Wątek może zostać przerwany. Później to obsłużymy.
+
             waitingNum--;
-            waitingFromGroup[3]--;
+            waitingFromGroup[SHOW_GROUP]--;
+
             if (thread.isInterrupted()) {
                 thread.interrupt();
                 releaseNextGroup(2);
                 throw new InterruptedException();
             }
         }
-        // If thread is interrupted after pre-protocol, we finish building description as if it was uninterrupted.
+
+        // Wątek przeszedł protokół wstępny. Od tego momemntu, jeśli zostanie przerwany, wykonujemu funkcję do końca.
         workingGroup = 3;
         workingNum++;
-        if (waitingFromGroup[3] > 0) {
+
+        // Kaskodowe wpuszczanie kolejnych wątków pokazujących stan kostki z dziedziczeniem mutex'a.
+        if (waitingFromGroup[SHOW_GROUP] > 0) {
             showSem.release();
         }
         else {
@@ -272,68 +299,14 @@ public class Cube {
 
         mutex.acquireUninterruptibly();
         workingNum--;
-        releaseNextGroup(3);
+        releaseNextGroup(SHOW_GROUP);
 
-        if (thread.isInterrupted()) { // If thread was interrupted after pre-protocol.
+        if (thread.isInterrupted()) { // Wątek został przerwany po protokole wstępnym.
             thread.interrupt();
             throw new InterruptedException();
         }
 
         return description;
-    }
-
-    public static void main(String[] args) {
-        var counter = new Object() { int value = 0; };
-
-        Cube cube = new Cube(4,
-                (x, y) -> { ++counter.value; },
-                (x, y) -> { ++counter.value; },
-                () -> { ++counter.value; },
-                () -> { ++counter.value; }
-        );
-
-        try {
-            cube.rotate(2, 0);
-            System.out.println(cube.show());
-            cube.rotate(5, 1);
-
-            String expected =
-                      "0000"
-                    + "0000"
-                    + "0000"
-                    + "1111"
-
-                    + "1115"
-                    + "1115"
-                    + "4444"
-                    + "1115"
-
-                    + "2222"
-                    + "2222"
-                    + "1115"
-                    + "2222"
-
-                    + "0333"
-                    + "0333"
-                    + "2222"
-                    + "0333"
-
-                    + "4444"
-                    + "4444"
-                    + "0333"
-                    + "4444"
-
-                    + "3333"
-                    + "5555"
-                    + "5555"
-                    + "5555";
-
-            System.out.println(expected);
-            System.out.println(cube.show());
-        }
-        catch (InterruptedException e) {
-            System.out.println("interrupted");
-        }
     }
 
 }
