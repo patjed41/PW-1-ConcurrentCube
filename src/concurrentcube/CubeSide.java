@@ -1,75 +1,76 @@
 package concurrentcube;
 
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class CubeSide {
-    int[][] color;
+    AtomicInteger[][] color;
     int size;
 
     public CubeSide(int size, int initialColor) {
         this.size = size;
-        color = new int[size][size];
+        color = new AtomicInteger[size][size];
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
-                color[i][j] = initialColor;
+                color[i][j] = new AtomicInteger(initialColor);
             }
         }
     }
 
-    public int[] getRow(int row) {
+    public AtomicInteger[] getRow(int row) {
         return Arrays.copyOf(color[row], size);
     }
 
-    public int[] getColumn(int column) {
-        int[] result = new int[size];
+    public AtomicInteger[] getColumn(int column) {
+        AtomicInteger[] result = new AtomicInteger[size];
         for (int i = 0; i < size; i++) {
-            result[i] = color[i][column];
+            result[i] = new AtomicInteger(color[i][column].get());
         }
         return result;
     }
 
-    private int[] reverseTable(int[] t) {
+    private AtomicInteger[] reverseTable(AtomicInteger[] t) {
         for (int i = 0; i < size / 2; i++) {
-            int temp = t[i];
-            t[i] = t[size - i - 1];
-            t[size - i - 1] = temp;
+            int temp = t[i].get();
+            t[i].set(t[size - i - 1].get());
+            t[size - i - 1].set(temp);
         }
-        return  t;
+        return t;
     }
 
-    public int[] getReversedRow(int layer) {
+    public AtomicInteger[] getReversedRow(int layer) {
         return reverseTable(getRow(layer));
     }
 
-    public int[] getReversedColumn(int layer) {
+    public AtomicInteger[] getReversedColumn(int layer) {
         return reverseTable(getColumn(layer));
     }
 
-    public void setRow(int row, int[] newRow) {
+    public void setRow(int row, AtomicInteger[] newRow) {
         System.arraycopy(newRow, 0, color[row], 0, size);
     }
 
-    public void setColumn(int column, int[] newColumn) {
+    public void setColumn(int column, AtomicInteger[] newColumn) {
         for (int i = 0; i < size; i++) {
-             color[i][column] = newColumn[i];
+             color[i][column].set(newColumn[i].get());
         }
     }
 
     public void rotateClockwise() {
-        int[][] result = new int[size][size];
+        AtomicInteger[][] result = new AtomicInteger[size][size];
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
-                result[j][size - i - 1] = color[i][j];
+                result[j][size - i - 1] = new AtomicInteger(color[i][j].get());
             }
         }
         color = result;
     }
 
     public void rotateCounterClockwise() {
-        int[][] result = new int[size][size];
+        AtomicInteger[][] result = new AtomicInteger[size][size];
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
-                result[size - j - 1][i] = color[i][j];
+                result[size - j - 1][i] = new AtomicInteger(color[i][j].get());
             }
         }
         color = result;

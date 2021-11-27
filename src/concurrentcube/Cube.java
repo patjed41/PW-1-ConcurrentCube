@@ -3,6 +3,8 @@
 package concurrentcube;
 
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
 public class Cube {
@@ -16,18 +18,20 @@ public class Cube {
 
     /**************************** ZMIENNE SYNCHRONIZACYJNE ********************************/
 
+    // Używam tylko zmiennych Atomic, żeby zapewnić prawidłową widoczność zmiennych.
+
     // liczba wątków, które aktualnie rotują kostkę lub pokazują jej stan
-    private volatile int workingNum;
+    private final AtomicInteger workingNum;
     // numer aktualnie pracującej grupy
-    private volatile int workingGroup;
+    private final AtomicInteger workingGroup;
     // workingLayer[s][i] == true, gdy i-ta warstwa potrząc od ściany s < 3 jest rotowana
-    private final boolean[][] workingLayer;
+    private final AtomicBoolean[][] workingLayer;
     // liczba wątków czekających na rotację lub pokazanie stanu
-    private volatile int waitingNum;
-    // waitingFromGroup[i] - liczba wątków czekających na rotację/pokazanie z i-tej grupy
-    private final int[] waitingFromGroup;
+    private final AtomicInteger waitingNum;
+    // waitingFromGroup[i] - liczba wątków czekających na pokazanie stanu kostki
+    private final AtomicInteger waitingForShowing;
     // waitingFromLayer[s][i] - liczba wątków czekających na obrót i-tej warstwy patrząc od ściany s < 3
-    private final int[][] waitingFromLayer;
+    private final AtomicInteger[][] waitingFromLayer;
     // ochrona zmiennych
     private final Semaphore mutex;
     // semafor, na którym czekają wątki oczekujące na pokazenie stanu kostki
@@ -62,12 +66,18 @@ public class Cube {
         back = new CubeSide(size, 4);
         bottom = new CubeSide(size, 5);
 
-        workingNum = 0;
-        workingGroup = 0;
-        workingLayer = new boolean[GROUPS][size];
-        waitingNum = 0;
-        waitingFromGroup = new int[GROUPS];
-        waitingFromLayer = new int[GROUPS][size];
+        workingNum = new AtomicInteger();
+        workingGroup = new AtomicInteger();
+        workingLayer = new AtomicBoolean[GROUPS][size];
+        waitingNum = new AtomicInteger();
+        waitingForShowing = new AtomicInteger();
+        waitingFromLayer = new AtomicInteger[GROUPS][size];
+        for (int group = 0; group < GROUPS; group++) {
+            for (int layer = 0; layer < size; layer++) {
+                workingLayer[group][layer] = new AtomicBoolean();
+                waitingFromLayer[group][layer] = new AtomicInteger();
+            }
+        }
         mutex = new Semaphore(1, true);
         showSem = new Semaphore(0, true);
         layerSem = new Semaphore[GROUPS - 1][size];
@@ -80,7 +90,7 @@ public class Cube {
 
     // Operacja obrócenia "brzegów" warstwy.
     private void rotateLayer(int side, int layer) {
-        int[] copyOfFirstFragment;
+        AtomicInteger[] copyOfFirstFragment;
 
         switch (side) {
             case 0:
@@ -159,27 +169,47 @@ public class Cube {
     // grupy jest wpuszczana później kaskadowo. Jest to wydzielony fragment kodu z funkcji rotate() i show(), bo się
     // powtarza. Lepiej go teraz nie analizować.
     private void releaseNextGroup(int group) {
-        if (workingNum == 0 && waitingNum > 0) { // Mamy kogo wpuścić.
-            for (int nextGroup = (group + 1) % GROUPS; true; nextGroup = (nextGroup + 1) % GROUPS) {
-                if (waitingFromGroup[nextGroup] > 0) {
-                    if (nextGroup == SHOW_GROUP) { // Wpuszczamy grupę pokazująca stan kostki.
-                        showSem.release();
-                    }
-                    else { // Wpuszczamy grupę rotującą (być może tę samą).
-                        for (int firstLayer = 0; firstLayer < size; firstLayer++) {
-                            if (waitingFromLayer[nextGroup][firstLayer] > 0) {
-                                layerSem[nextGroup][firstLayer].release();
-                                break;
-                            }
+        boolean threadReleased = false;
+
+        if (workingNum.get() == 0) { // Możemy kogoś wpuścić.
+            int nextGroup = (group + 1) % GROUPS;
+            for (int i = 0; i <= GROUPS; i++) {
+                if (nextGroup == SHOW_GROUP && waitingForShowing.get() > 0) { // Wpuszczamy grupę pokazująca stan kostki.
+                    showSem.release();
+                    threadReleased = true;
+                }
+                else { // Wpuszczamy grupę rotującą (być może tę samą).
+                    for (int firstLayer = 0; firstLayer < size; firstLayer++) {
+                        if (waitingFromLayer[nextGroup][firstLayer].get() > 0) {
+                            layerSem[nextGroup][firstLayer].release();
+                            threadReleased = true;
+                            break;
                         }
                     }
+                }
+                if (threadReleased) {
                     break;
                 }
+                nextGroup = (nextGroup + 1) % GROUPS;
             }
         }
-        else { // Nie mamy kogo wpuścić lub nie możemy tego zrobić, bo ktoś jeszcze pracuje.
+
+        if (!threadReleased) { // Nikogo nie wpuściliśmy.
             mutex.release();
         }
+    }
+
+    // Funkcja dopuszczająca kolejną wartwę z grupu. Zwraca false, jeśli nie ma kogo wpuścić.
+    private boolean releaseNextLayer(int group, int dualLayer) {
+        boolean releasedNext = false;
+        for (int otherLayer = dualLayer + 1; otherLayer < size; otherLayer++) {
+            if (waitingFromLayer[group][otherLayer].get() > 0) {
+                releasedNext = true;
+                layerSem[group][otherLayer].release();
+                break;
+            }
+        }
+        return releasedNext;
     }
 
     public void rotate(int side, int layer) throws InterruptedException {
@@ -189,55 +219,34 @@ public class Cube {
 
         mutex.acquire();
         // Poniżej true, jeśli wątek musi poczekać.
-        if (workingNum > 0 && (workingGroup != group || waitingNum > 0 || workingLayer[group][dualLayer])) {
-            waitingNum++;
-            waitingFromGroup[group]++;
-            waitingFromLayer[group][dualLayer]++;
+        if (workingNum.get() > 0 && (workingGroup.get() != group || waitingNum.get() > 0 || workingLayer[group][dualLayer].get())) {
+            waitingNum.incrementAndGet();
+            waitingFromLayer[group][dualLayer].incrementAndGet();
 
             mutex.release();
-            /*layerSem[group][dualLayer].acquireUninterruptibly(); // Wątek może zostać przerwany. Później to obsłużymy.
+            layerSem[group][dualLayer].acquireUninterruptibly();
 
-            waitingNum--;
-            waitingFromGroup[group]--;
-            waitingFromLayer[group][dualLayer]--;
+            waitingNum.decrementAndGet();
+            waitingFromLayer[group][dualLayer].decrementAndGet();
 
-            if (thread.isInterrupted()) {
+            if (thread.isInterrupted()) { // Obsługa wątków przerwanych w protokole wstępnym.
+                if (!releaseNextLayer(group, dualLayer - 1)) { // Kontynuujemy kaskadowe wpuszczanie.
+                    releaseNextGroup(group); // Jeśli nie mamy kogo wpuścić, być może trzeba wpuścić nową grupę.
+                }
+
                 thread.interrupt();
-                releaseNextGroup((group + 3) % 4);
-                throw new InterruptedException();
-            }*/
-            try {
-                layerSem[group][dualLayer].acquire();
-            }
-            catch (InterruptedException e) {
-                waitingNum--;
-                waitingFromGroup[group]--;
-                waitingFromLayer[group][dualLayer]--;
-                releaseNextGroup((group + 3) % 4);
                 throw new InterruptedException();
             }
-
-            waitingNum--;
-            waitingFromGroup[group]--;
-            waitingFromLayer[group][dualLayer]--;
         }
 
         // Wątek przeszedł protokół wstępny. Od tego momemntu, jeśli zostanie przerwany, wykonujemu funkcję do końca.
-        workingGroup = group;
-        workingLayer[group][dualLayer] = true;
-        workingNum++;
+        workingGroup.set(group);
+        workingLayer[group][dualLayer].set(true);
+        workingNum.incrementAndGet();
 
         // Kaskodowe wpuszczanie kolejnych wątków z pracującej grupy z dziedziczeniem mutex'a. Ostatecznie dla każdej
-        // jednoznacznej warstwy zostanie wpuszczony jeden wątek, o ile choć jeden czeka na wpuszczenie.
-        boolean releasedNext = false;
-        for (int otherLayer = dualLayer + 1; otherLayer < size; otherLayer++) {
-            if (waitingFromLayer[group][otherLayer] > 0) {
-                releasedNext = true;
-                layerSem[group][otherLayer].release();
-                break;
-            }
-        }
-        if (!releasedNext) { // Wątek jest ostatnim wpuszczonym z kaskadowej sekwencji wpuszczeń.
+        // jednoznacznej warstwy zostanie wpuszczony jeden nieprzerwany wątek, o ile choć jeden czeka na wpuszczenie.
+        if (!releaseNextLayer(group, dualLayer)) { // Wątek jest ostatnim wpuszczonym z kaskadowej sekwencji wpuszczeń.
             mutex.release();
         }
 
@@ -247,8 +256,8 @@ public class Cube {
         afterRotation.accept(side, layer);
 
         mutex.acquireUninterruptibly();
-        workingNum--;
-        workingLayer[group][dualLayer] = false;
+        workingNum.decrementAndGet();
+        workingLayer[group][dualLayer].set(false);
         releaseNextGroup(group); // Wpuszczenie kolejnej grupy wątków. Z sukcesem zrobi to tylko ostatni kończący pracę.
 
         if (thread.isInterrupted()) { // Wątek został przerwany po protokole wstępnym.
@@ -263,29 +272,35 @@ public class Cube {
         mutex.acquire();
 
         // Poniżej true, jeśli wątek musi poczekać.
-        if (workingNum > 0 && (workingGroup != 3 || waitingNum > 0)) {
-            waitingNum++;
-            waitingFromGroup[SHOW_GROUP]++;
+        if (workingNum.get() > 0 && (workingGroup.get() != 3 || waitingNum.get() > 0)) {
+            waitingNum.incrementAndGet();
+            waitingForShowing.incrementAndGet();
 
             mutex.release();
             showSem.acquireUninterruptibly(); // Wątek może zostać przerwany. Później to obsłużymy.
 
-            waitingNum--;
-            waitingFromGroup[SHOW_GROUP]--;
+            waitingNum.decrementAndGet();
+            waitingForShowing.decrementAndGet();
 
-            if (thread.isInterrupted()) {
+            if (thread.isInterrupted()) { // Obsługa wątków przerwanych w protokole wstępnym.
+                if (waitingForShowing.get() > 0) { // Kontynuujemy kaskadowe wpuszczanie.
+                    showSem.release();
+                }
+                else { // Jeśli nie mamy więcej wątków czekających na show, to być może trzeba wpuścić nową grupę.
+                    releaseNextGroup(SHOW_GROUP);
+                }
+
                 thread.interrupt();
-                releaseNextGroup(2);
                 throw new InterruptedException();
             }
         }
 
         // Wątek przeszedł protokół wstępny. Od tego momemntu, jeśli zostanie przerwany, wykonujemu funkcję do końca.
-        workingGroup = 3;
-        workingNum++;
+        workingGroup.set(SHOW_GROUP);
+        workingNum.incrementAndGet();
 
         // Kaskodowe wpuszczanie kolejnych wątków pokazujących stan kostki z dziedziczeniem mutex'a.
-        if (waitingFromGroup[SHOW_GROUP] > 0) {
+        if (waitingForShowing.get() > 0) {
             showSem.release();
         }
         else {
@@ -294,11 +309,11 @@ public class Cube {
 
         beforeShowing.run();
         String description = top.toString() + left.toString() + front.toString() +
-                             right.toString() + back.toString() + bottom.toString();
+                right.toString() + back.toString() + bottom.toString();
         afterShowing.run();
 
         mutex.acquireUninterruptibly();
-        workingNum--;
+        workingNum.decrementAndGet();
         releaseNextGroup(SHOW_GROUP);
 
         if (thread.isInterrupted()) { // Wątek został przerwany po protokole wstępnym.
