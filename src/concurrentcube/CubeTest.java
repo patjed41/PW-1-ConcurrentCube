@@ -1,3 +1,5 @@
+// Patryk Jędrzejczak
+
 package concurrentcube;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -15,9 +17,15 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 
+// Testy zrobiłem tak, żeby działały na students w rozsądnym czasie około 12 sekund. Na students mogłem stworzyć
+// maksymalnie około 100 wątków, inaczej dochodziło do przekroczenia limitu stosu. Ponadto nie mogłem tworzyć bardzo
+// dużych kostek i wykonywać zbyt wielu operacji, bo testy działały zbyt wolno. W przypadku testowania na swoim
+// komputerze można te testy "podkręcić", zwiększając rozmiary kostek, liczbę operacji i liczbę wątków, w szczególności
+// w sparametryzowanych testach.
+
 public class CubeTest {
 
-    /*********************************** Funkcje i klasy pomocnicze *****************************************/
+    /***************************************** FUNKCJE I KLASY POMOCNICZE *********************************************/
 
     private static final Random random = new Random();
 
@@ -33,6 +41,7 @@ public class CubeTest {
 
     }
 
+    // Sprawdzenie, czy liczba kolorów na kostce jest prawidłowa.
     private void checkNumberOfColors(Cube cube, int size) {
         String cubeState = "";
         try {
@@ -43,7 +52,7 @@ public class CubeTest {
 
         int[] colorCount = new int[6];
         for (int i = 0; i < cubeState.length(); i++) {
-            colorCount[cubeState.charAt(i)- '0']++;
+            colorCount[cubeState.charAt(i) - '0']++;
         }
         for (int i = 0; i < 6; i++) {
             assertEquals(size * size, colorCount[i]);
@@ -52,10 +61,10 @@ public class CubeTest {
 
     private Cube getBasicCube(int size) {
         return new Cube(size,
-            (x, y) -> { ; },
-            (x, y) -> { ; },
-            () -> { ; },
-            () -> { ; }
+            (x, y) -> {},
+            (x, y) -> {},
+            () -> {},
+            () -> {}
         );
     }
 
@@ -92,9 +101,9 @@ public class CubeTest {
         Cube cube = new Cube(size,
             (side, layer) -> {
                 cubeMutex.acquireUninterruptibly(); // Uninterruptibly, bo funckje before/after nie mogą się przerwać
+                assertEquals(0, showCounter.get()); // Ktoś pokazuje podczas rotowania - brak bezpieczeństwa.
 
-                assertEquals(0, showCounter.get());
-
+                // Dla pewnych i, j, k otrzymaliśmy blockCounter[i][j][k] > 1 - brak bezpieczeństwa.
                 for (int i = 0; i < size; i++) {
                     for (int j = 0; j < size; j++) {
                         if (side == 0) assertEquals(1, blockCounter[layer][i][j].incrementAndGet());
@@ -129,6 +138,7 @@ public class CubeTest {
 
                 showCounter.getAndIncrement();
 
+                // Ktoś rotuje podczas pokazywania - brak bezpieczeństwa.
                 for (int i = 0; i < size; i++) {
                     for (int j = 0; j < size; j++) {
                         for (int k = 0; k < size; k++) {
@@ -151,12 +161,12 @@ public class CubeTest {
         return cube;
     }
 
+    // Funkcja uruchamiająca wątki i czekająca aż skończą pracować.
     private void executeThreads(Thread[] threads, int threadsNum) {
         for (int i = 0; i < threadsNum; i++) {
             threads[i].start();
         }
 
-        // To się zapętli, jeśli wątki rotujące nie działają współbieżnie.
         for (int i = 0; i < threadsNum; i++) {
             try {
                 threads[i].join();
@@ -166,6 +176,7 @@ public class CubeTest {
         }
     }
 
+    // Funkcja uruchamiająca wątki i przerywająca kolejne wątki po losowym czasie.
     private void executeAndInterruptThreads(Thread[] threads, int threadsNum) {
         for (int i = 0; i < threadsNum; i++) {
             threads[i].start();
@@ -173,9 +184,10 @@ public class CubeTest {
 
         for (int i = 0; i < threadsNum; i++) {
             // Dajemy wątkom chwilę popracować.
-            int time = random.nextInt(1000);
-            while (time > 0) {
-                time--;
+            try {
+                Thread.sleep(random.nextInt(3));
+            } catch (InterruptedException e) {
+                System.err.println("test interrupted");
             }
 
             threads[i].interrupt(); //  Przerywamy kolejny wątek w losowym (prawie) momencie.
@@ -190,13 +202,13 @@ public class CubeTest {
         }
     }
 
-    /********************************************* Testy ***************************************************/
+    /************************************************** TESTY *********************************************************/
 
-    // Prosty, sekwencyjny test poprawnościowy, dający się sprawdzić "ręcznie".
+    // Prosty, sekwencyjny test poprawnościowy, dający się sprawdzić z kostką w ręku.
     @Test
     public void example() {
         int size = 3;
-        Cube cube = getBasicCube(3);
+        Cube cube = getBasicCube(size);
 
         try {
             cube.rotate(0, 0);
@@ -270,6 +282,7 @@ public class CubeTest {
     }
 
     // Sekwencyjny test poprawnościowy, sprawdzający, czy liczba kolorów zgadza się po wykonaniu wielu losowych operacji.
+    // Sprawdza poprawność implementacji rotacji.
     @Test
     public void sequentialNumberOfColors() {
         int size = 3;
@@ -289,6 +302,7 @@ public class CubeTest {
     }
 
     // Współbieżny test poprawnościowy, sprawdzający, czy liczba kolorów zgadza się po wykonaniu wielu losowych operacji.
+    // Sprawdza poprawność współdzielenia kostki przez wątki.
     @Test
     public void concurrentNumberOfColors() {
         int size = 3;
@@ -344,10 +358,10 @@ public class CubeTest {
         List<Pair<Integer, Integer>> pairs = Collections.synchronizedList(new ArrayList<>());
 
         Cube concurrentCube = new Cube(size,
-                (x, y) -> { pairs.add(new Pair<>(x, y)); },
-                (x, y) -> { ; },
-                () -> { ; },
-                () -> { ; }
+            (x, y) -> pairs.add(new Pair<>(x, y)),
+            (x, y) -> {},
+            () -> {},
+            () -> {}
         );
 
         Thread[] threads = new Thread[10];
@@ -403,18 +417,18 @@ public class CubeTest {
         Cube cube = new Cube(size,
             (x, y) -> {
                 try {
-                    barrier.await();
+                    barrier.await(); // Wszystkie wątki muszą dojść do bariery razem, aby mogły pójść dalej.
                 } catch (InterruptedException | BrokenBarrierException e) {
                     System.err.println("test interrupted");
                 }
             },
-            (x, y) -> { ; },
-            () -> { ; },
-            () -> { ; }
+            (x, y) -> {},
+            () -> {},
+            () -> {}
         );
 
         Thread[] rotatingThreads = new Thread[size]; // Wątki mogące rotować współbieżnie.
-        Thread[] showingThreads = new Thread[size];
+        Thread[] showingThreads = new Thread[size]; // Wątki mogące pokazywać współbieżnie.
         for (int i = 0; i < size; i++) {
             int layer = i;
             rotatingThreads[i] = new Thread(
@@ -445,37 +459,37 @@ public class CubeTest {
         executeThreads(showingThreads, size);
     }
 
-    // Bardziej złożony test sprawdzający, czy wątki działają współbieżnie. Mamy po 100 wątków z każdej z 4 grup
+    // Bardziej złożony test sprawdzający, czy wątki działają współbieżnie. Mamy po 10 wątków z każdej z 4 grup
     // (rotujące względem ścian 0 i 5, rotujące względem ścian 1 i 3, rotujące względem ścian 2 i 4, pokazujące).
     // Każdy wątek wykonuje jedną operację. Wszystkie wątki z jednej grupy mogą wykonywać operację współbieżnie.
-    // Każdy wątek zasypia w metodzie beforeRotation/beforeShowing na 100 milisekund. Widać, że jeśli współbieżność
-    // jest zaimplementowana sensownie, to taki test powinien skończyń się w niewiele ponad 400 milisekund. Każda grupa
+    // Każdy wątek zasypia w metodzie beforeRotation/beforeShowing na pół sekudny. Widać, że jeśli współbieżność
+    // jest zaimplementowana sensownie, to taki test powinien zokończyń się w niewiele ponad 2 sekundy. Każda grupa
     // wątków powinna cała pracować jednocześnie, ewentualnie w dwóch turach.
     @Test
     public void concurrentPerformance2() {
-        // Limit to 2 sekundy, żeby test zadziałał nawet dla wyjątkowo dziwnych przeplotów. Chodzi tylko o to,
-        // żeby czas był zdecydowanie mniejszy od 40 sekund, które przekroczyłaby implementacja sekwencyjna.
-        assertTimeout(Duration.ofSeconds(2), () -> {
-            int size = 100;
+        // Limit to 4 sekundy, żeby test zadziałał nawet dla wyjątkowo dziwnych przeplotów. Chodzi tylko o to,
+        // żeby czas był zdecydowanie mniejszy od 20 sekund, które przekroczyłaby implementacja sekwencyjna.
+        assertTimeout(Duration.ofSeconds(4), () -> {
+            int size = 10;
 
-            // Kostka usypiająca wątki na sekundę w metodach before.
+            // Kostka usypiająca wątki na pół sekudny w metodach before.
             Cube cube = new Cube(size,
                 (x, y) -> {
                     try {
-                        Thread.sleep(100);
+                        Thread.sleep(500);
                     } catch (InterruptedException e) {
                         System.err.println("test interrupted");
                     }
                 },
-                (x, y) -> { ; },
+                (x, y) -> {},
                 () -> {
                     try {
-                        Thread.sleep(100);
+                        Thread.sleep(500);
                     } catch (InterruptedException e) {
                         System.err.println("test interrupted");
                     }
                 },
-                () -> { ; }
+                () -> {}
             );
 
             // 4 grupy wątków rozmiaru size
@@ -538,28 +552,29 @@ public class CubeTest {
     @Test
     public void securityTest() {
         // mała kostka, dużo wątków
-        parameterizedSecurityTest(1, 1000, 10);
-        parameterizedSecurityTest(2, 1000, 10);
-        parameterizedSecurityTest(3, 1000, 10);
-        parameterizedSecurityTest(5, 200, 100);
+        parameterizedSecurityTest(1, 200, 10);
+        parameterizedSecurityTest(2, 200, 10);
+        parameterizedSecurityTest(3, 200, 10);
+        parameterizedSecurityTest(3, 200, 30);
 
         // duża kostka, mało wątków
         parameterizedSecurityTest(10, 20000, 1);
         parameterizedSecurityTest(10, 10000, 2);
-        parameterizedSecurityTest(10, 5000, 3);
+        parameterizedSecurityTest(10, 5000, 4);
 
         // rozmiar kostki podobny do ilości wątków
-        parameterizedSecurityTest(2, 20000, 2);
-        parameterizedSecurityTest(3, 10000, 3);
-        parameterizedSecurityTest(10, 3000, 10);
-        parameterizedSecurityTest(20, 2000, 20);
-        parameterizedSecurityTest(20, 3000, 10);
-        parameterizedSecurityTest(10, 3000, 20);
+        parameterizedSecurityTest(2, 10000, 2);
+        parameterizedSecurityTest(3, 5000, 3);
+        parameterizedSecurityTest(5, 200, 5);
+        parameterizedSecurityTest(5, 200, 10);
+        parameterizedSecurityTest(10, 200, 5);
+        parameterizedSecurityTest(10, 200, 10);
     }
 
     // Test sprawdzający obsługę przerwań w losowym momencie. Sprawdzane jest potencjalne pojawianie się zaklaszczeń
     // (wtedy test nie skończy się wykonywać). Ponadto test sprawdza, czy jeśli została wykonana metoda beforeRotaion(),
     // to mimo przerwania wątku, funkcja rotate() wykonała się poprawnie do końca. Podobnie z beforeShowing() dla show().
+    // Innymi słowy, test sprawdza, czy przerwania nie psują poprawnego stanu kostki.
     @Test
     public void interruptionHandlingTest() {
         int size = 1;
@@ -572,8 +587,8 @@ public class CubeTest {
             AtomicInteger beforeShowingCounter = new AtomicInteger();
             AtomicInteger afterShowingCounter = new AtomicInteger();
             Cube cube = new Cube(size,
-                (x, y) -> { beforeRotationCounter.incrementAndGet(); },
-                (x, y) -> { afterRotationCounter.incrementAndGet(); },
+                (x, y) -> beforeRotationCounter.incrementAndGet(),
+                (x, y) -> afterRotationCounter.incrementAndGet(),
                 beforeShowingCounter::incrementAndGet,
                 afterShowingCounter::incrementAndGet
             );
@@ -625,20 +640,22 @@ public class CubeTest {
         Thread[] threads = new Thread[threadsNum]; // Wątki wykonujące losowe operacje w nieskończonej pętli.
         for (int i = 0; i < threadsNum; i++) {
             threads[i] = new Thread(
-                    () -> {
-                        while (true) {
-                            try {
-                                randomOperation(cube, size);
-                            }
-                            catch (InterruptedException e) {
-                                break;
-                            }
+                () -> {
+                    while (true) {
+                        try {
+                            randomOperation(cube, size);
+                        }
+                        catch (InterruptedException e) {
+                            break;
                         }
                     }
+                }
             );
         }
 
         executeAndInterruptThreads(threads, threadsNum);
+
+        checkNumberOfColors(cube, size); // dodatkowe sprawdzenie stanu kostki
     }
 
     // Ostateczny test sprawdzający obsługę przerwań i bezpieczeństwo jednocześnie. Wątki wykonują losowe operacje
@@ -647,25 +664,25 @@ public class CubeTest {
     @Test
     public void interruptionHandlingAndSecurityTest() {
         // mała kostka, dużo wątków
-        parameterizedInterruptionHandlingAndSecurityTest(1, 20);
-        parameterizedInterruptionHandlingAndSecurityTest(2, 20);
-        parameterizedInterruptionHandlingAndSecurityTest(3, 20);
-        parameterizedInterruptionHandlingAndSecurityTest(5, 200);
-        parameterizedInterruptionHandlingAndSecurityTest(3, 1000);
+        parameterizedInterruptionHandlingAndSecurityTest(1, 10);
+        parameterizedInterruptionHandlingAndSecurityTest(2, 10);
+        parameterizedInterruptionHandlingAndSecurityTest(3, 10);
+        parameterizedInterruptionHandlingAndSecurityTest(5, 20);
+        parameterizedInterruptionHandlingAndSecurityTest(3, 50);
 
         // duża kostka, mało wątków
         parameterizedInterruptionHandlingAndSecurityTest(10, 1);
         parameterizedInterruptionHandlingAndSecurityTest(10, 5);
         parameterizedInterruptionHandlingAndSecurityTest(50, 20);
         parameterizedInterruptionHandlingAndSecurityTest(100, 10);
-        parameterizedInterruptionHandlingAndSecurityTest(500, 100);
+        parameterizedInterruptionHandlingAndSecurityTest(200, 50);
 
-        // duża kostka, jeszcze więcej wątków
+        // rozmiar kostki podobny do ilości wątków
+        parameterizedInterruptionHandlingAndSecurityTest(20, 20);
+        parameterizedInterruptionHandlingAndSecurityTest(30, 30);
         parameterizedInterruptionHandlingAndSecurityTest(30, 50);
-        parameterizedInterruptionHandlingAndSecurityTest(30, 200);
-        parameterizedInterruptionHandlingAndSecurityTest(50, 100);
-        parameterizedInterruptionHandlingAndSecurityTest(100, 2000);
-        parameterizedInterruptionHandlingAndSecurityTest(200, 5000);
+        parameterizedInterruptionHandlingAndSecurityTest(50, 50);
+        parameterizedInterruptionHandlingAndSecurityTest(100, 50);
     }
 
 }

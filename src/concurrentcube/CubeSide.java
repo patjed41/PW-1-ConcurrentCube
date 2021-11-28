@@ -1,3 +1,7 @@
+// Patryk Jędrzejczak
+
+// Klasa reprezentująca jedną ściankę kostki.
+
 package concurrentcube;
 
 import java.util.Arrays;

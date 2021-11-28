@@ -1,4 +1,4 @@
-// Patryk jędrzejczak
+// Patryk Jędrzejczak
 
 package concurrentcube;
 
@@ -16,8 +16,6 @@ public class Cube {
     private final Runnable afterShowing;
     private final CubeSide top, left, front, right, back, bottom;
 
-    /**************************** ZMIENNE SYNCHRONIZACYJNE ********************************/
-
     // Używam tylko zmiennych Atomic, żeby zapewnić prawidłową widoczność zmiennych.
 
     // liczba wątków, które aktualnie rotują kostkę lub pokazują jej stan
@@ -28,11 +26,11 @@ public class Cube {
     private final AtomicBoolean[][] workingLayer;
     // liczba wątków czekających na rotację lub pokazanie stanu
     private final AtomicInteger waitingNum;
-    // waitingFromGroup[i] - liczba wątków czekających na pokazanie stanu kostki
-    private final AtomicInteger waitingForShowing;
+    // liczba wątków z danej grupy czekających na wykonanie operacji
+    private final AtomicInteger[] waitingFromGroup;
     // waitingFromLayer[s][i] - liczba wątków czekających na obrót i-tej warstwy patrząc od ściany s < 3
     private final AtomicInteger[][] waitingFromLayer;
-    // ochrona zmiennych
+
     private final Semaphore mutex;
     // semafor, na którym czekają wątki oczekujące na pokazenie stanu kostki
     private final Semaphore showSem;
@@ -43,8 +41,8 @@ public class Cube {
     //  1 - rotujące warstwy względem ścian 1 i 3
     //  2 - rotujące warstwy względem ścian 2 i 4
     //  3 - pokazujące stan kostki
-    // Bezpieczeństwo rozwiązania jest zachowane, gdy w danym momencie pracują wątki tylko z jednej grupy. Ponadto
-    // dla grup 0, 1, 2 aktualnie może pracować tylko 1 proces obracający jakąś warstwę.
+    // Bezpieczeństwo kostki jest zachowane, gdy w danym momencie pracują wątki tylko z jednej grupy. Ponadto
+    // dla grup 0, 1, 2 aktualnie może pracować tylko 1 proces obracający pewną warstwę.
     private static final int GROUPS = 4;
     private static final int SHOW_GROUP = 3;
 
@@ -70,9 +68,10 @@ public class Cube {
         workingGroup = new AtomicInteger();
         workingLayer = new AtomicBoolean[GROUPS][size];
         waitingNum = new AtomicInteger();
-        waitingForShowing = new AtomicInteger();
+        waitingFromGroup = new AtomicInteger[GROUPS];
         waitingFromLayer = new AtomicInteger[GROUPS][size];
         for (int group = 0; group < GROUPS; group++) {
+            waitingFromGroup[group] = new AtomicInteger();
             for (int layer = 0; layer < size; layer++) {
                 workingLayer[group][layer] = new AtomicBoolean();
                 waitingFromLayer[group][layer] = new AtomicInteger();
@@ -166,15 +165,15 @@ public class Cube {
     }
 
     // Fragment kodu dopuszczający kolejną grupę wątków do pracy. Faktycznie wpuszczany jest jeden wątek, a reszta
-    // grupy jest wpuszczana później kaskadowo. Jest to wydzielony fragment kodu z funkcji rotate() i show(), bo się
-    // powtarza. Lepiej go teraz nie analizować.
+    // grupy jest wpuszczana później kaskadowo. Jest to wydzielony fragment kodu z funkcji rotate() i show().
+    // Lepiej go teraz nie analizować.
     private void releaseNextGroup(int group) {
         boolean threadReleased = false;
 
         if (workingNum.get() == 0) { // Możemy kogoś wpuścić.
-            int nextGroup = (group + 1) % GROUPS;
-            for (int i = 0; i <= GROUPS; i++) {
-                if (nextGroup == SHOW_GROUP && waitingForShowing.get() > 0) { // Wpuszczamy grupę pokazująca stan kostki.
+            int nextGroup = (group + 1) % GROUPS; // Zaczynamy od kolejnej grupy.
+            for (int i = 0; i <= GROUPS; i++) { // A kończymy na naszej.
+                if (nextGroup == SHOW_GROUP && waitingFromGroup[SHOW_GROUP].get() > 0) { // Wpuszczamy grupę pokazującą.
                     showSem.release();
                     threadReleased = true;
                 }
@@ -199,7 +198,7 @@ public class Cube {
         }
     }
 
-    // Funkcja dopuszczająca kolejną wartwę z grupu. Zwraca false, jeśli nie ma kogo wpuścić.
+    // Funkcja dopuszczająca wątek rotujący kolejną wartwę z grupy. Zwraca false, jeśli nie ma kogo wpuścić.
     private boolean releaseNextLayer(int group, int dualLayer) {
         boolean releasedNext = false;
         for (int otherLayer = dualLayer + 1; otherLayer < size; otherLayer++) {
@@ -216,17 +215,22 @@ public class Cube {
         int group = getGroupOfRotation(side);
         int dualLayer = side < 3 ? layer : size - layer - 1; // jednoznaczna warstwa dla przeciwnych ścian
         Thread thread = Thread.currentThread();
+        boolean shouldReleaseNext = true; // true, jeśli wątek powinien wpuścić nastęnego
 
         mutex.acquire();
+
         // Poniżej true, jeśli wątek musi poczekać.
-        if (workingNum.get() > 0 && (workingGroup.get() != group || waitingNum.get() > 0 || workingLayer[group][dualLayer].get())) {
+        if (workingNum.get() > 0 && (workingGroup.get() != group || waitingNum.get() - waitingFromGroup[group].get() > 0
+                                                                 || workingLayer[group][dualLayer].get())) {
             waitingNum.incrementAndGet();
+            waitingFromGroup[group].incrementAndGet();
             waitingFromLayer[group][dualLayer].incrementAndGet();
 
             mutex.release();
             layerSem[group][dualLayer].acquireUninterruptibly();
 
             waitingNum.decrementAndGet();
+            waitingFromGroup[group].decrementAndGet();
             waitingFromLayer[group][dualLayer].decrementAndGet();
 
             if (thread.isInterrupted()) { // Obsługa wątków przerwanych w protokole wstępnym.
@@ -238,6 +242,9 @@ public class Cube {
                 throw new InterruptedException();
             }
         }
+        else if (workingNum.get() > 0) { // Tylko wątki, które weszły bez czekania i nie jako pierwsze, nie wpuszczają.
+            shouldReleaseNext = false;
+        }
 
         // Wątek przeszedł protokół wstępny. Od tego momemntu, jeśli zostanie przerwany, wykonujemu funkcję do końca.
         workingGroup.set(group);
@@ -246,7 +253,7 @@ public class Cube {
 
         // Kaskodowe wpuszczanie kolejnych wątków z pracującej grupy z dziedziczeniem mutex'a. Ostatecznie dla każdej
         // jednoznacznej warstwy zostanie wpuszczony jeden nieprzerwany wątek, o ile choć jeden czeka na wpuszczenie.
-        if (!releaseNextLayer(group, dualLayer)) { // Wątek jest ostatnim wpuszczonym z kaskadowej sekwencji wpuszczeń.
+        if (!shouldReleaseNext || !releaseNextLayer(group, dualLayer)) {
             mutex.release();
         }
 
@@ -272,21 +279,22 @@ public class Cube {
         mutex.acquire();
 
         // Poniżej true, jeśli wątek musi poczekać.
-        if (workingNum.get() > 0 && (workingGroup.get() != 3 || waitingNum.get() > 0)) {
+        if (workingNum.get() > 0 && (workingGroup.get() != SHOW_GROUP ||
+                                     waitingNum.get() - waitingFromGroup[SHOW_GROUP].get() > 0)) {
             waitingNum.incrementAndGet();
-            waitingForShowing.incrementAndGet();
+            waitingFromGroup[SHOW_GROUP].incrementAndGet();
 
             mutex.release();
             showSem.acquireUninterruptibly(); // Wątek może zostać przerwany. Później to obsłużymy.
 
             waitingNum.decrementAndGet();
-            waitingForShowing.decrementAndGet();
+            waitingFromGroup[SHOW_GROUP].decrementAndGet();
 
             if (thread.isInterrupted()) { // Obsługa wątków przerwanych w protokole wstępnym.
-                if (waitingForShowing.get() > 0) { // Kontynuujemy kaskadowe wpuszczanie.
+                if (waitingFromGroup[SHOW_GROUP].get() > 0) { // Kontynuujemy kaskadowe wpuszczanie.
                     showSem.release();
                 }
-                else { // Jeśli nie mamy więcej wątków czekających na show, to być może trzeba wpuścić nową grupę.
+                else { // Jeśli nie mamy więcej wątków czekających na show(), to być może trzeba wpuścić nową grupę.
                     releaseNextGroup(SHOW_GROUP);
                 }
 
@@ -300,7 +308,7 @@ public class Cube {
         workingNum.incrementAndGet();
 
         // Kaskodowe wpuszczanie kolejnych wątków pokazujących stan kostki z dziedziczeniem mutex'a.
-        if (waitingForShowing.get() > 0) {
+        if (waitingFromGroup[SHOW_GROUP].get() > 0) {
             showSem.release();
         }
         else {
