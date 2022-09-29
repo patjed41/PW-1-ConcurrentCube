@@ -1,6 +1,6 @@
 pj*
+*.class
 .idea
 ConcurrentCube.iml
-Validate.java
 validate.sh
 out
