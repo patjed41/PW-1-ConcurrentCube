@@ -1,4 +1,4 @@
-// Patryk Jędrzejczak
+// author - Patryk Jędrzejczak
 
 package concurrentcube;
 

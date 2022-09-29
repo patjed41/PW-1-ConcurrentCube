@@ -1,4 +1,4 @@
-// Patryk Jędrzejczak
+// author - Patryk Jędrzejczak
 
 // Klasa reprezentująca jedną ściankę kostki.
 
